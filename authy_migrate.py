@@ -193,7 +193,9 @@ def main():
 
     password = args.password or getpass.getpass("Authy backup password: ")
 
-    content = normalize_authy_csv(args.input.read_text(encoding="utf-8"))
+    # utf-8-sig drops a leading BOM, which would otherwise become part of
+    # the first column name and break header detection.
+    content = normalize_authy_csv(args.input.read_text(encoding="utf-8-sig"))
 
     reader = csv.DictReader(io.StringIO(content))
     missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])

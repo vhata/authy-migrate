@@ -318,6 +318,14 @@ class TestMain:
         aegis = json.loads((tmp_path / "tokens_aegis.json").read_text())
         assert aegis["db"]["entries"][0]["info"]["secret"] == _SECRET
 
+    def test_handles_utf8_bom(self, tmp_path):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()], wrap_lines=True), encoding="utf-8-sig")
+        _run([str(csv_file)])
+
+        aegis = json.loads((tmp_path / "tokens_aegis.json").read_text())
+        assert aegis["db"]["entries"][0]["info"]["secret"] == _SECRET
+
     def test_output_files_have_0600_permissions(self, tmp_path):
         csv_file = tmp_path / "tokens.csv"
         csv_file.write_text(_make_csv([_token_row()]))
