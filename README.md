@@ -66,7 +66,7 @@ python authy_migrate.py tokens.csv -o ~/exports --format aegis
 
 | File | Compatible with |
 |---|---|
-| `tokens_aegis.json` | Aegis (Android) natively; 2FAS and others that support Aegis import |
+| `tokens_aegis.json` | Aegis vault (db v3) - Aegis (Android) natively; Proton Authenticator, 2FAS and others that support Aegis import |
 | `otpauth_uris.txt` | Plain-text URIs accepted by most open-source authenticators; some apps (e.g. Google Authenticator, iOS Passwords) only import URIs via QR code |
 
 > [!IMPORTANT]
