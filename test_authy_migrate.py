@@ -215,7 +215,22 @@ class TestBuildAegis:
     def test_top_level_structure(self):
         result = build_aegis([{"issuer": "X", "account": "a", "secret": "S"}])
         assert result["version"] == 1
-        assert result["db"]["version"] == 2
+        assert result["db"]["version"] == 3
+        assert result["db"]["groups"] == []
+
+    def test_entry_has_all_fields_required_by_strict_importers(self):
+        # Proton Authenticator deserializes Aegis entries into a struct with no
+        # defaults, so a missing key (notably "groups") rejects the whole file.
+        entry = build_aegis([{"issuer": "X", "account": "a", "secret": "S"}])["db"][
+            "entries"
+        ][0]
+        assert set(entry) == {
+            "type", "uuid", "name", "issuer", "note", "favorite", "icon", "info", "groups"
+        }
+        assert entry["groups"] == []
+        assert entry["note"] == ""
+        assert entry["favorite"] is False
+        assert entry["icon"] is None
 
     def test_entry_fields(self):
         entry = build_aegis(

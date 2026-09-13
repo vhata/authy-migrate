@@ -108,11 +108,14 @@ def write_secret_file(path: Path, content: str) -> None:
 
 
 def build_aegis(tokens: list[dict]) -> dict:
+    # Aegis vault db v3. Every entry key is emitted even when empty: some
+    # importers (Proton Authenticator) deserialize strictly and reject the
+    # whole file if e.g. "groups" is absent.
     return {
         "version": 1,
         "header": {"slots": None, "params": None},
         "db": {
-            "version": 2,
+            "version": 3,
             "entries": [
                 {
                     "type": "totp",
@@ -128,9 +131,11 @@ def build_aegis(tokens: list[dict]) -> dict:
                         "digits": 6,
                         "period": 30,
                     },
+                    "groups": [],
                 }
                 for t in tokens
             ],
+            "groups": [],
         },
     }
 
