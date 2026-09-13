@@ -13,6 +13,7 @@ from authy_migrate import (
     build_otpauth,
     decrypt_seed,
     main,
+    normalize_authy_csv,
     split_name,
     write_secret_file,
 )
@@ -44,13 +45,19 @@ def _encrypt(
 _ENCRYPTED = _encrypt(_SECRET)
 
 
-def _make_csv(rows: list[dict], wrap: bool = False) -> str:
-    """Build an Authy-formatted CSV string."""
+def _make_csv(rows: list[dict], wrap: bool = False, wrap_lines: bool = False) -> str:
+    """Build an Authy-formatted CSV string.
+
+    wrap:       older Authy exports wrap the entire file in one pair of quotes.
+    wrap_lines: newer Authy exports wrap each line in its own pair of quotes.
+    """
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=["name", "encrypted_seed", "salt", "iv"])
     writer.writeheader()
     writer.writerows(rows)
     content = buf.getvalue()
+    if wrap_lines:
+        return "".join(f'"{line}"\n' for line in content.splitlines())
     return f'"{content}"' if wrap else content
 
 
@@ -88,6 +95,56 @@ class TestDecryptSeed:
         except (ValueError, UnicodeDecodeError):
             return
         assert result != _SECRET
+
+
+# ---------------------------------------------------------------------------
+# normalize_authy_csv
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeAuthyCsv:
+    PLAIN = "name,encrypted_seed,salt,iv\nGitHub:me,AAA,BBB,CCC"
+
+    def test_plain_csv_is_unchanged(self):
+        assert normalize_authy_csv(self.PLAIN) == self.PLAIN
+
+    def test_strips_whole_file_quotes(self):
+        assert normalize_authy_csv(f'"{self.PLAIN}"\n') == self.PLAIN
+
+    def test_strips_per_line_quotes(self):
+        quoted = '"name,encrypted_seed,salt,iv"\n"GitHub:me,AAA,BBB,CCC"\n'
+        assert normalize_authy_csv(quoted) == self.PLAIN
+
+    def test_leaves_legitimately_quoted_field_alone(self):
+        # A name containing a comma is quoted by the CSV writer; the line does
+        # not end with a quote, so it must pass through untouched.
+        line = '"Foo, Inc:me",AAA,BBB,CCC'
+        assert normalize_authy_csv(f"name,encrypted_seed,salt,iv\n{line}") == (
+            f"name,encrypted_seed,salt,iv\n{line}"
+        )
+
+    def test_lone_quote_is_not_stripped(self):
+        assert normalize_authy_csv('"') == '"'
+
+    @pytest.mark.parametrize("quoted_header", [False, True])
+    @pytest.mark.parametrize("wrapping", ["plain", "whole_file", "per_line"])
+    def test_preserves_field_quotes(self, quoted_header, wrapping):
+        header = ('"name","encrypted_seed","salt","iv"' if quoted_header
+                  else "name,encrypted_seed,salt,iv")
+        plain = header + '\n"Foo, Inc:me","AAA","BBB","CCC"'
+        if wrapping == "whole_file":
+            content = f'"{plain}"'
+        elif wrapping == "per_line":
+            content = "\n".join(f'"{line}"' for line in plain.splitlines())
+        else:
+            content = plain
+        rows = list(csv.DictReader(io.StringIO(normalize_authy_csv(content))))
+        assert rows == [{"name": "Foo, Inc:me", "encrypted_seed": "AAA",
+                         "salt": "BBB", "iv": "CCC"}]
+
+    def test_whole_file_wrapper_with_quoted_final_name_without_newline(self):
+        plain = 'name,encrypted_seed,salt,iv\n"Foo, Inc:me",AAA,BBB,CCC'
+        assert normalize_authy_csv(f'"{plain}"') == plain
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +309,14 @@ class TestMain:
         csv_file.write_text(_make_csv([_token_row()], wrap=True))
         _run([str(csv_file)])
         assert (tmp_path / "tokens_aegis.json").exists()
+
+    def test_handles_authy_per_line_quoted_csv(self, tmp_path):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()], wrap_lines=True))
+        _run([str(csv_file)])
+
+        aegis = json.loads((tmp_path / "tokens_aegis.json").read_text())
+        assert aegis["db"]["entries"][0]["info"]["secret"] == _SECRET
 
     def test_output_files_have_0600_permissions(self, tmp_path):
         csv_file = tmp_path / "tokens.csv"

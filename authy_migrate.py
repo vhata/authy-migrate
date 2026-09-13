@@ -24,6 +24,7 @@ from Crypto.Cipher import AES
 
 
 KDF_ITERATIONS = 100_000
+REQUIRED_COLUMNS = {"name", "encrypted_seed", "salt", "iv"}
 
 
 def decrypt_seed(encrypted_seed_b64: str, salt: str, iv_hex: str, password: str) -> str:
@@ -44,6 +45,43 @@ def decrypt_seed(encrypted_seed_b64: str, salt: str, iv_hex: str, password: str)
         raise ValueError("Invalid padding — wrong password?")
 
     return plain[:-pad].decode("utf-8").strip().upper()
+
+
+def _unwrap_quotes(text: str) -> str:
+    return text[1:-1] if len(text) >= 2 and text.startswith('"') and text.endswith('"') else text
+
+
+def normalize_authy_csv(content: str) -> str:
+    """Strip the stray quoting Authy adds to its CSV export.
+
+    Older exports wrap the entire file in a single pair of quotes; newer ones
+    wrap each line in its own pair. Either way Python's csv parser would
+    treat the quoted span as one field. Detect the format from the header
+    before removing wrappers, preserving ordinary CSV field quotes.
+    """
+    content = content.strip()
+    if not content:
+        return content
+
+    header = content.splitlines()[0]
+
+    def valid_header(value: str) -> bool:
+        # strict=True makes an unclosed quote raise, so a header that has
+        # been only partially unwrapped (e.g. the whole-file format with
+        # quoted field names) never validates in the wrong branch below.
+        try:
+            fields = next(csv.reader([value], strict=True))
+        except (csv.Error, StopIteration):
+            return False
+        return REQUIRED_COLUMNS.issubset(fields)
+
+    if valid_header(header):
+        return content
+    if header.startswith('"') and header.endswith('"') and valid_header(header[1:-1]):
+        return "\n".join(_unwrap_quotes(line) for line in content.splitlines())
+    if content.startswith('"') and content.endswith('"') and valid_header(header[1:]):
+        return _unwrap_quotes(content)
+    return content
 
 
 def split_name(name_field: str) -> tuple[str, str]:
@@ -155,15 +193,10 @@ def main():
 
     password = args.password or getpass.getpass("Authy backup password: ")
 
-    content = args.input.read_text(encoding="utf-8").strip()
-    # Authy wraps the entire CSV in a single pair of quotes, which causes
-    # Python's csv parser to treat the whole file as one quoted field.
-    if content.startswith('"') and content.endswith('"'):
-        content = content[1:-1]
+    content = normalize_authy_csv(args.input.read_text(encoding="utf-8"))
 
     reader = csv.DictReader(io.StringIO(content))
-    required = {"name", "encrypted_seed", "salt", "iv"}
-    missing = required - set(reader.fieldnames or [])
+    missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
     if missing:
         print(
             f"Error: CSV is missing required columns: {sorted(missing)}",
