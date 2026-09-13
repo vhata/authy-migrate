@@ -100,6 +100,14 @@ Key  = PBKDF2-HMAC-SHA1(password, salt_utf8, iterations=100000, dklen=32)
 Data = AES-256-CBC(key, iv_hex, base64(encrypted_seed))
 ```
 
+## Alternatives
+
+If you cannot wait for the GDPR export and have an iPhone and a Mac,
+[authy-exit](https://github.com/barkleesanders/authy-exit) captures the encrypted tokens
+from Authy's own sync traffic via a local proxy instead, and targets Bitwarden rather than
+Aegis. It uses the same decryption scheme as this tool but is a considerably more involved
+setup (TLS interception, certificate trust, an iPhone backup for account metadata).
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
