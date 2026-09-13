@@ -80,9 +80,10 @@ and the script uses it to turn each encrypted row back into a secret any authent
 understands. It runs in three moves:
 
 1. **Read the export.** The CSV is parsed and checked for the four columns it needs
-   (`name`, `encrypted_seed`, `salt`, and `iv`). Authy wraps the whole file in one extra
-   pair of quotes, so the script strips those first or the parser would read the entire
-   file as a single field.
+   (`name`, `encrypted_seed`, `salt`, and `iv`). Authy adds stray quotes to the export -
+   older backups wrap the whole file in one pair, newer ones wrap every line in its own
+   pair. The script detects the wrapping format from the header and removes that
+   wrapper while preserving ordinary CSV field quotes.
 2. **Unlock each token.** For every row, your password plus that row's `salt` are stretched
    into a 32-byte key (PBKDF2), which then decrypts the `encrypted_seed` with AES. The result
    is the base32 TOTP secret - the short string that actually generates your 6-digit codes.
