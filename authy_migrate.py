@@ -233,7 +233,7 @@ def main():
 
     successes = []
     failures = []
-    rows_attempted = 0
+    malformed = 0
 
     for fields in reader:
         if not any(f.strip() for f in fields):
@@ -243,8 +243,7 @@ def main():
         except ValueError as exc:
             # Report by line number: the fields may not be where we expect,
             # so any of them could hold key material.
-            rows_attempted += 1
-            failures.append((f"line {reader.line_num}", exc))
+            malformed += 1
             print(f"  ✗  line {reader.line_num}: {exc}")
             continue
 
@@ -255,7 +254,6 @@ def main():
 
         if not name or not enc_seed:
             continue
-        rows_attempted += 1
 
         try:
             secret = decrypt_seed(enc_seed, salt, iv, password)
@@ -268,11 +266,19 @@ def main():
             failures.append((name, exc))
             print(f"  ✗  {name}: {exc}")
 
-    if rows_attempted == 0:
+    problems = []
+    if failures:
+        problems.append(f"{len(failures)} failed to decrypt")
+    if malformed:
+        problems.append(f"{malformed} malformed row(s)")
+
+    if not successes and not problems:
         print("\nNo valid token rows found in CSV.", file=sys.stderr)
         sys.exit(1)
     if not successes:
-        print("\nNo tokens decrypted — wrong backup password?", file=sys.stderr)
+        # Only blame the password when rows were well-formed but still failed.
+        hint = " — wrong backup password?" if failures else ""
+        print(f"\nNo tokens decrypted ({', '.join(problems)}){hint}", file=sys.stderr)
         sys.exit(1)
 
     written = []
@@ -291,10 +297,7 @@ def main():
         write_secret_file(uris_path, uris)
         written.append(uris_path)
 
-    print(
-        f"\nDecrypted {len(successes)} token(s)"
-        + (f", {len(failures)} failed" if failures else "")
-    )
+    print(f"\nDecrypted {len(successes)} token(s)" + "".join(f", {p}" for p in problems))
     print("\nOutput:")
     for path in written:
         print(f"  {path}")

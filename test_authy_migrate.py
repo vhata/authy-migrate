@@ -498,6 +498,43 @@ class TestMain:
 
         out = capsys.readouterr().out
         assert "✗  line 3: malformed row: expected 4 fields, got 2" in out
-        assert "Decrypted 2 token(s), 1 failed" in out
+        assert "Decrypted 2 token(s), 1 malformed row(s)" in out
+        assert "failed" not in out
         assert "Broken" not in out
         assert "PLACEHOLDER" not in out
+
+    def test_summary_counts_decrypt_failures_and_malformed_rows_separately(
+        self, tmp_path, capsys
+    ):
+        csv_file = tmp_path / "tokens.csv"
+        bad_iv = {**_token_row("BadIv:user"), "iv": "not-hex"}
+        good = _make_csv([_token_row("Good:user"), bad_iv])
+        csv_file.write_text(good + "Broken:row,PLACEHOLDER\n")
+        _run([str(csv_file)])
+
+        out = capsys.readouterr().out
+        assert "Decrypted 1 token(s), 1 failed to decrypt, 1 malformed row(s)" in out
+
+    def test_all_rows_malformed_does_not_blame_password(self, tmp_path, capsys):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text("name,encrypted_seed,salt,iv\nBroken:row,PLACEHOLDER\n")
+        with pytest.raises(SystemExit) as exc:
+            _run([str(csv_file)])
+        assert exc.value.code == 1
+
+        err = capsys.readouterr().err
+        assert "No tokens decrypted (1 malformed row(s))" in err
+        assert "password" not in err
+
+    def test_wrong_password_with_malformed_rows_reports_both(self, tmp_path, capsys):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()]) + "Broken:row,PLACEHOLDER\n")
+        with pytest.raises(SystemExit) as exc:
+            _run([str(csv_file)], password="wrong")
+        assert exc.value.code == 1
+
+        err = capsys.readouterr().err
+        assert (
+            "No tokens decrypted (1 failed to decrypt, 1 malformed row(s))"
+            " — wrong backup password?"
+        ) in err
