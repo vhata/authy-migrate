@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "authy-migrate"
+version = "0.1.0"
+description = "Decrypt an Authy GDPR data export and rewrite the tokens as an Aegis vault, a Bitwarden JSON export or otpauth:// URIs."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = ["cryptography"]
+keywords = ["authy", "aegis", "bitwarden", "totp", "2fa", "otpauth", "gdpr"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Utilities",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+authy-migrate = "authy_migrate:main"
+
+[project.urls]
+Homepage = "https://github.com/uiltondutra/authy-migrate"
+Issues = "https://github.com/uiltondutra/authy-migrate/issues"
+
+[tool.setuptools]
+py-modules = ["authy_migrate"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "W"]
