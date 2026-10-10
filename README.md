@@ -22,13 +22,35 @@ Authy provides no direct export, so you must submit a data portability request t
 3. Once verified, they send a download link by email. This can take up to 30 days.
 4. Download the archive and locate the `.csv` file containing your tokens.
 
-### 2. Install dependencies
+### 2. Install
+
+Install the `authy-migrate` command with [pipx](https://pipx.pypa.io/), which keeps it in
+its own isolated environment:
+
+```bash
+pipx install git+https://github.com/uiltondutra/authy-migrate
+```
+
+Or, from a clone of this repository, install it into the current environment:
+
+```bash
+pip install .
+```
+
+To run the script directly from a clone without installing it, install just the
+dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 3. Run the migration script
+
+```bash
+authy-migrate [options] <tokens.csv>
+```
+
+Or, without installing:
 
 ```bash
 python authy_migrate.py [options] <tokens.csv>
@@ -58,15 +80,18 @@ to the input CSV by default.
 
 ```bash
 # Prompt for the password; write both formats next to the CSV
-python authy_migrate.py "Authy Personal Information Request - Tokens.csv"
+authy-migrate "Authy Personal Information Request - Tokens.csv"
 
 # Write only the Aegis JSON to a custom directory
-python authy_migrate.py tokens.csv -o ~/exports --format aegis
+authy-migrate tokens.csv -o ~/exports --format aegis
 
 # Write only the Bitwarden JSON
-python authy_migrate.py tokens.csv --format bitwarden
+authy-migrate tokens.csv --format bitwarden
 
 # Write every format
+authy-migrate tokens.csv --format all
+
+# Running the script from a clone without installing it takes the same options
 python authy_migrate.py tokens.csv --format all
 ```
 
