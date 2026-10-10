@@ -84,6 +84,25 @@ def normalize_authy_csv(content: str) -> str:
     return content
 
 
+def parse_row(header: list[str], fields: list[str]) -> dict[str, str]:
+    """Map a parsed CSV row onto the header, anchored on the right.
+
+    Authy writes token names without CSV quoting, so a name containing a
+    comma arrives as extra leading fields. When the header ends with the
+    encrypted_seed, salt and iv columns, the surplus fields are joined back
+    into the name.
+    """
+    if len(fields) < len(header):
+        raise ValueError(
+            f"malformed row: expected {len(header)} fields, got {len(fields)}"
+        )
+    surplus = len(fields) - len(header)
+    if surplus and "name" in header and header[-3:] == ["encrypted_seed", "salt", "iv"]:
+        i = header.index("name")
+        fields = fields[:i] + [",".join(fields[i : i + surplus + 1])] + fields[i + surplus + 1 :]
+    return dict(zip(header, fields))
+
+
 def split_name(name_field: str) -> tuple[str, str]:
     """Split 'Service:account' into (issuer, account)."""
     issuer, _, account = name_field.partition(":")
@@ -202,8 +221,9 @@ def main():
     # the first column name and break header detection.
     content = normalize_authy_csv(args.input.read_text(encoding="utf-8-sig"))
 
-    reader = csv.DictReader(io.StringIO(content))
-    missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
+    reader = csv.reader(io.StringIO(content))
+    header = next(reader, [])
+    missing = REQUIRED_COLUMNS - set(header)
     if missing:
         print(
             f"Error: CSV is missing required columns: {sorted(missing)}",
@@ -213,9 +233,20 @@ def main():
 
     successes = []
     failures = []
-    rows_attempted = 0
+    malformed = 0
 
-    for row in reader:
+    for fields in reader:
+        if not any(f.strip() for f in fields):
+            continue
+        try:
+            row = parse_row(header, fields)
+        except ValueError as exc:
+            # Report by line number: the fields may not be where we expect,
+            # so any of them could hold key material.
+            malformed += 1
+            print(f"  ✗  line {reader.line_num}: {exc}")
+            continue
+
         name = row["name"].strip()
         enc_seed = row["encrypted_seed"].strip()
         salt = row["salt"].strip()
@@ -223,7 +254,6 @@ def main():
 
         if not name or not enc_seed:
             continue
-        rows_attempted += 1
 
         try:
             secret = decrypt_seed(enc_seed, salt, iv, password)
@@ -236,11 +266,19 @@ def main():
             failures.append((name, exc))
             print(f"  ✗  {name}: {exc}")
 
-    if rows_attempted == 0:
+    problems = []
+    if failures:
+        problems.append(f"{len(failures)} failed to decrypt")
+    if malformed:
+        problems.append(f"{malformed} malformed row(s)")
+
+    if not successes and not problems:
         print("\nNo valid token rows found in CSV.", file=sys.stderr)
         sys.exit(1)
     if not successes:
-        print("\nNo tokens decrypted — wrong backup password?", file=sys.stderr)
+        # Only blame the password when rows were well-formed but still failed.
+        hint = " — wrong backup password?" if failures else ""
+        print(f"\nNo tokens decrypted ({', '.join(problems)}){hint}", file=sys.stderr)
         sys.exit(1)
 
     written = []
@@ -259,10 +297,7 @@ def main():
         write_secret_file(uris_path, uris)
         written.append(uris_path)
 
-    print(
-        f"\nDecrypted {len(successes)} token(s)"
-        + (f", {len(failures)} failed" if failures else "")
-    )
+    print(f"\nDecrypted {len(successes)} token(s)" + "".join(f", {p}" for p in problems))
     print("\nOutput:")
     for path in written:
         print(f"  {path}")

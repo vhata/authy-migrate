@@ -14,6 +14,7 @@ from authy_migrate import (
     decrypt_seed,
     main,
     normalize_authy_csv,
+    parse_row,
     split_name,
     write_secret_file,
 )
@@ -59,6 +60,17 @@ def _make_csv(rows: list[dict], wrap: bool = False, wrap_lines: bool = False) ->
     if wrap_lines:
         return "".join(f'"{line}"\n' for line in content.splitlines())
     return f'"{content}"' if wrap else content
+
+
+def _make_unquoted_csv(rows: list[dict], wrapping: str = "plain") -> str:
+    """Like _make_csv, but with no field quoting, as Authy writes names containing commas.
+
+    wrapping: "plain", "whole_file" or "per_line", matching the Authy formats.
+    """
+    content = _make_csv(rows).replace('"', "")
+    if wrapping == "per_line":
+        return "".join(f'"{line}"\n' for line in content.splitlines())
+    return f'"{content}"' if wrapping == "whole_file" else content
 
 
 def _token_row(name: str = "GitHub:user@example.com") -> dict:
@@ -145,6 +157,40 @@ class TestNormalizeAuthyCsv:
     def test_whole_file_wrapper_with_quoted_final_name_without_newline(self):
         plain = 'name,encrypted_seed,salt,iv\n"Foo, Inc:me",AAA,BBB,CCC'
         assert normalize_authy_csv(f'"{plain}"') == plain
+
+
+# ---------------------------------------------------------------------------
+# parse_row
+# ---------------------------------------------------------------------------
+
+
+class TestParseRow:
+    HEADER = ["name", "encrypted_seed", "salt", "iv"]
+
+    def test_exact_field_count(self):
+        assert parse_row(self.HEADER, ["GitHub:me", "AAA", "BBB", "CCC"]) == {
+            "name": "GitHub:me", "encrypted_seed": "AAA", "salt": "BBB", "iv": "CCC"
+        }
+
+    def test_surplus_fields_are_joined_into_name(self):
+        fields = ["Acme:Surname", "Firstname", " Jr", "AAA", "BBB", "CCC"]
+        assert parse_row(self.HEADER, fields) == {
+            "name": "Acme:Surname,Firstname, Jr",
+            "encrypted_seed": "AAA",
+            "salt": "BBB",
+            "iv": "CCC",
+        }
+
+    def test_surplus_fields_left_alone_for_unknown_column_order(self):
+        header = ["encrypted_seed", "salt", "iv", "name"]
+        assert parse_row(header, ["AAA", "BBB", "CCC", "Acme:Surname", "Firstname"]) == {
+            "encrypted_seed": "AAA", "salt": "BBB", "iv": "CCC", "name": "Acme:Surname"
+        }
+
+    def test_too_few_fields_raises_without_field_contents(self):
+        with pytest.raises(ValueError) as exc:
+            parse_row(self.HEADER, ["Broken:row", "AAA"])
+        assert str(exc.value) == "malformed row: expected 4 fields, got 2"
 
 
 # ---------------------------------------------------------------------------
@@ -421,3 +467,74 @@ class TestMain:
         _run([str(csv_file)])
         aegis = json.loads((tmp_path / "tokens_aegis.json").read_text())
         assert len(aegis["db"]["entries"]) == 1
+
+    @pytest.mark.parametrize("wrapping", ["plain", "whole_file", "per_line"])
+    def test_unquoted_comma_in_name_is_preserved(self, tmp_path, wrapping):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(
+            _make_unquoted_csv([_token_row("Acme:Surname,Firstname")], wrapping)
+        )
+        _run([str(csv_file)])
+
+        entry = json.loads((tmp_path / "tokens_aegis.json").read_text())["db"][
+            "entries"
+        ][0]
+        assert entry["issuer"] == "Acme"
+        assert entry["name"] == "Surname,Firstname"
+        assert entry["info"]["secret"] == _SECRET
+
+        uris = (tmp_path / "otpauth_uris.txt").read_text()
+        assert "otpauth://totp/Acme:Surname%2CFirstname?" in uris
+
+    def test_row_with_too_few_fields_is_reported_as_failure(self, tmp_path, capsys):
+        csv_file = tmp_path / "tokens.csv"
+        good = _make_csv([_token_row("First:user"), _token_row("Second:user")])
+        header, first, second = good.splitlines()
+        csv_file.write_text(f"{header}\n{first}\nBroken:row,PLACEHOLDER\n{second}\n")
+        _run([str(csv_file)])
+
+        aegis = json.loads((tmp_path / "tokens_aegis.json").read_text())
+        assert [e["issuer"] for e in aegis["db"]["entries"]] == ["First", "Second"]
+
+        out = capsys.readouterr().out
+        assert "✗  line 3: malformed row: expected 4 fields, got 2" in out
+        assert "Decrypted 2 token(s), 1 malformed row(s)" in out
+        assert "failed" not in out
+        assert "Broken" not in out
+        assert "PLACEHOLDER" not in out
+
+    def test_summary_counts_decrypt_failures_and_malformed_rows_separately(
+        self, tmp_path, capsys
+    ):
+        csv_file = tmp_path / "tokens.csv"
+        bad_iv = {**_token_row("BadIv:user"), "iv": "not-hex"}
+        good = _make_csv([_token_row("Good:user"), bad_iv])
+        csv_file.write_text(good + "Broken:row,PLACEHOLDER\n")
+        _run([str(csv_file)])
+
+        out = capsys.readouterr().out
+        assert "Decrypted 1 token(s), 1 failed to decrypt, 1 malformed row(s)" in out
+
+    def test_all_rows_malformed_does_not_blame_password(self, tmp_path, capsys):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text("name,encrypted_seed,salt,iv\nBroken:row,PLACEHOLDER\n")
+        with pytest.raises(SystemExit) as exc:
+            _run([str(csv_file)])
+        assert exc.value.code == 1
+
+        err = capsys.readouterr().err
+        assert "No tokens decrypted (1 malformed row(s))" in err
+        assert "password" not in err
+
+    def test_wrong_password_with_malformed_rows_reports_both(self, tmp_path, capsys):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()]) + "Broken:row,PLACEHOLDER\n")
+        with pytest.raises(SystemExit) as exc:
+            _run([str(csv_file)], password="wrong")
+        assert exc.value.code == 1
+
+        err = capsys.readouterr().err
+        assert (
+            "No tokens decrypted (1 failed to decrypt, 1 malformed row(s))"
+            " — wrong backup password?"
+        ) in err
