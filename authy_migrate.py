@@ -159,6 +159,34 @@ def build_aegis(tokens: list[dict]) -> dict:
     }
 
 
+def build_bitwarden(tokens: list[dict]) -> dict:
+    # Unencrypted Bitwarden JSON export. Bitwarden Password Manager imports it
+    # as "Bitwarden (json)", and Bitwarden Authenticator reads the TOTP seeds
+    # from login.totp, which must be a complete otpauth:// URI.
+    return {
+        "encrypted": False,
+        "folders": [],
+        "items": [
+            {
+                "id": str(uuid.uuid4()),
+                "type": 1,  # login
+                "name": t["issuer"] or t["name"],
+                "favorite": False,
+                "notes": None,
+                "login": {
+                    "username": t["account"] or None,
+                    "password": None,
+                    "totp": build_otpauth(t["issuer"], t["account"], t["secret"]),
+                    "uris": [],
+                },
+                "folderId": None,
+                "collectionIds": None,
+            }
+            for t in tokens
+        ],
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Decrypt Authy GDPR export tokens into standard authenticator formats."
@@ -184,9 +212,12 @@ def parse_args():
     )
     parser.add_argument(
         "--format",
-        choices=["aegis", "uris", "both"],
+        choices=["aegis", "uris", "bitwarden", "both", "all"],
         default="both",
-        help="Output format: aegis JSON, otpauth URI list, or both (default: both)",
+        help=(
+            "Output format: aegis JSON, otpauth URI list, bitwarden JSON, "
+            "both (aegis and uris) or all (default: both)"
+        ),
     )
     parser.add_argument(
         "--aegis-file",
@@ -199,6 +230,12 @@ def parse_args():
         default="otpauth_uris.txt",
         metavar="NAME",
         help="Filename for the otpauth URI list (default: otpauth_uris.txt)",
+    )
+    parser.add_argument(
+        "--bitwarden-file",
+        default="tokens_bitwarden.json",
+        metavar="NAME",
+        help="Filename for the Bitwarden JSON export (default: tokens_bitwarden.json)",
     )
     return parser.parse_args()
 
@@ -283,12 +320,12 @@ def main():
 
     written = []
 
-    if args.format in ("aegis", "both"):
+    if args.format in ("aegis", "both", "all"):
         aegis_path = output_dir / args.aegis_file
         write_secret_file(aegis_path, json.dumps(build_aegis(successes), indent=2))
         written.append(aegis_path)
 
-    if args.format in ("uris", "both"):
+    if args.format in ("uris", "both", "all"):
         uris_path = output_dir / args.uris_file
         uris = "".join(
             build_otpauth(t["issuer"], t["account"], t["secret"]) + "\n"
@@ -296,6 +333,13 @@ def main():
         )
         write_secret_file(uris_path, uris)
         written.append(uris_path)
+
+    if args.format in ("bitwarden", "all"):
+        bitwarden_path = output_dir / args.bitwarden_file
+        write_secret_file(
+            bitwarden_path, json.dumps(build_bitwarden(successes), indent=2)
+        )
+        written.append(bitwarden_path)
 
     print(f"\nDecrypted {len(successes)} token(s)" + "".join(f", {p}" for p in problems))
     print("\nOutput:")

@@ -10,6 +10,7 @@ from Crypto.Cipher import AES
 
 from authy_migrate import (
     build_aegis,
+    build_bitwarden,
     build_otpauth,
     decrypt_seed,
     main,
@@ -316,6 +317,65 @@ class TestBuildAegis:
 
 
 # ---------------------------------------------------------------------------
+# build_bitwarden
+# ---------------------------------------------------------------------------
+
+
+def _bw_token(name: str, secret: str = "ABCDEF") -> dict:
+    issuer, account = split_name(name)
+    return {"name": name, "issuer": issuer, "account": account, "secret": secret}
+
+
+class TestBuildBitwarden:
+    def test_top_level_structure(self):
+        result = build_bitwarden([_bw_token("X:a")])
+        assert result["encrypted"] is False
+        assert result["folders"] == []
+        assert len(result["items"]) == 1
+
+    def test_item_with_issuer_and_account(self):
+        item = build_bitwarden([_bw_token("GitHub:user@example.com")])["items"][0]
+        assert set(item) == {
+            "id", "type", "name", "favorite", "notes", "login", "folderId", "collectionIds"
+        }
+        assert item["type"] == 1
+        assert item["name"] == "GitHub"
+        assert item["favorite"] is False
+        assert item["notes"] is None
+        assert item["folderId"] is None
+        assert item["collectionIds"] is None
+        assert item["login"] == {
+            "username": "user@example.com",
+            "password": None,
+            "totp": build_otpauth("GitHub", "user@example.com", "ABCDEF"),
+            "uris": [],
+        }
+
+    def test_empty_account_gives_null_username(self):
+        item = build_bitwarden([_bw_token("GitHub:")])["items"][0]
+        assert item["name"] == "GitHub"
+        assert item["login"]["username"] is None
+        assert item["login"]["totp"] == build_otpauth("GitHub", "", "ABCDEF")
+
+    def test_name_without_colon_uses_raw_name(self):
+        item = build_bitwarden([_bw_token("GitHub")])["items"][0]
+        assert item["name"] == "GitHub"
+        assert item["login"]["username"] is None
+
+    def test_empty_issuer_falls_back_to_raw_name(self):
+        item = build_bitwarden([_bw_token(":user")])["items"][0]
+        assert item["name"] == ":user"
+        assert item["login"]["username"] == "user"
+
+    def test_items_have_distinct_ids_and_no_password(self):
+        items = build_bitwarden(
+            [_bw_token("A:a", "X"), _bw_token("B:b", "Y"), _bw_token("C", "Z")]
+        )["items"]
+        assert len({i["id"] for i in items}) == 3
+        assert all(i["login"]["password"] is None for i in items)
+
+
+# ---------------------------------------------------------------------------
 # write_secret_file
 # ---------------------------------------------------------------------------
 
@@ -415,6 +475,41 @@ class TestMain:
         _run([str(csv_file), "--format", "uris"])
         assert not (tmp_path / "tokens_aegis.json").exists()
         assert (tmp_path / "otpauth_uris.txt").exists()
+
+    def test_format_bitwarden_only(self, tmp_path):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()]))
+        _run([str(csv_file), "--format", "bitwarden"])
+        path = tmp_path / "tokens_bitwarden.json"
+        assert path.stat().st_mode & 0o777 == 0o600
+        bitwarden = json.loads(path.read_text())
+        assert bitwarden["items"][0]["login"]["totp"] == build_otpauth(
+            "GitHub", "user@example.com", _SECRET
+        )
+        assert not (tmp_path / "tokens_aegis.json").exists()
+        assert not (tmp_path / "otpauth_uris.txt").exists()
+
+    def test_bitwarden_file_option(self, tmp_path):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()]))
+        _run([str(csv_file), "--format", "bitwarden", "--bitwarden-file", "bw.json"])
+        assert (tmp_path / "bw.json").exists()
+        assert not (tmp_path / "tokens_bitwarden.json").exists()
+
+    def test_format_both_excludes_bitwarden(self, tmp_path):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()]))
+        _run([str(csv_file), "--format", "both"])
+        assert (tmp_path / "tokens_aegis.json").exists()
+        assert (tmp_path / "otpauth_uris.txt").exists()
+        assert not (tmp_path / "tokens_bitwarden.json").exists()
+
+    def test_format_all_writes_every_file(self, tmp_path):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()]))
+        _run([str(csv_file), "--format", "all"])
+        for name in ("tokens_aegis.json", "otpauth_uris.txt", "tokens_bitwarden.json"):
+            assert (tmp_path / name).stat().st_mode & 0o777 == 0o600
 
     def test_exits_1_on_missing_input_file(self, tmp_path):
         with pytest.raises(SystemExit) as exc:
