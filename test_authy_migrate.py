@@ -6,7 +6,7 @@ import json
 from unittest.mock import patch
 
 import pytest
-from Crypto.Cipher import AES
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import authy_migrate
 from authy_migrate import (
@@ -52,7 +52,13 @@ def _encrypt_plaintext(plain: bytes, key: bytes, iv_hex: str = _IV_HEX) -> str:
     """PKCS#7-pad and AES-256-CBC encrypt arbitrary bytes under a given key."""
     pad_len = 16 - (len(plain) % 16)
     padded = plain + bytes([pad_len] * pad_len)
-    ciphertext = AES.new(key, AES.MODE_CBC, bytes.fromhex(iv_hex)).encrypt(padded)
+    return _encrypt_padded(padded, key, iv_hex)
+
+
+def _encrypt_padded(padded: bytes, key: bytes, iv_hex: str = _IV_HEX) -> str:
+    """AES-256-CBC encrypt already-padded bytes under a given key."""
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(bytes.fromhex(iv_hex))).encryptor()
+    ciphertext = encryptor.update(padded) + encryptor.finalize()
     return base64.b64encode(ciphertext).decode()
 
 
@@ -123,6 +129,21 @@ class TestDecryptSeed:
         except (ValueError, UnicodeDecodeError):
             return
         assert result != _SECRET
+
+    def test_bad_padding_error_does_not_leak_data(self):
+        # Correct key and IV, so the secret itself decrypts, but the final
+        # block is all zero bytes, which is not valid PKCS#7 padding.
+        key = hashlib.pbkdf2_hmac(
+            "sha1", _PASSWORD.encode(), _SALT.encode(), 100_000, dklen=32
+        )
+        enc = _encrypt_padded(_SECRET.encode("utf-8") + bytes(16), key)
+        ciphertext = base64.b64decode(enc)
+        with pytest.raises(ValueError) as exc:
+            decrypt_seed(enc, _SALT, _IV_HEX, _PASSWORD)
+        message = str(exc.value)
+        assert "Invalid padding" in message
+        for leaked in (_SECRET, _SECRET.lower(), enc, ciphertext.hex(), repr(ciphertext)):
+            assert leaked not in message
 
 
 class TestKdfIterationFallback:
