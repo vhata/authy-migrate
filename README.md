@@ -6,7 +6,8 @@ right (Article 20) legally requires Twilio to hand over your data on request.
 
 That data arrives as a CSV in which every token is encrypted with your backup password.
 **authy-migrate** is a Python command-line utility that unlocks each one and rewrites them
-as an [Aegis](https://github.com/beemdevelopment/Aegis) vault or plain `otpauth://` URIs.
+as an [Aegis](https://github.com/beemdevelopment/Aegis) vault, a Bitwarden JSON export or
+plain `otpauth://` URIs.
 So you can migrate your codes over to any standard authenticator app.
 
 ## Getting Started
@@ -44,9 +45,10 @@ to the input CSV by default.
 |---|---|---|
 | `-o, --output-dir PATH` | Same directory as input | Directory for output files |
 | `-p, --password TEXT` | Prompted | Backup password |
-| `--format {aegis,uris,both}` | `both` | Output format |
+| `--format {aegis,uris,bitwarden,both,all}` | `both` | Output format; `both` is Aegis and URIs, `all` is every format |
 | `--aegis-file NAME` | `tokens_aegis.json` | Filename for the Aegis JSON export |
 | `--uris-file NAME` | `otpauth_uris.txt` | Filename for the otpauth URI list |
+| `--bitwarden-file NAME` | `tokens_bitwarden.json` | Filename for the Bitwarden JSON export |
 
 > [!WARNING]
 > Avoid passing `--password` on the command line. It is visible to other users on the same
@@ -60,6 +62,12 @@ python authy_migrate.py "Authy Personal Information Request - Tokens.csv"
 
 # Write only the Aegis JSON to a custom directory
 python authy_migrate.py tokens.csv -o ~/exports --format aegis
+
+# Write only the Bitwarden JSON
+python authy_migrate.py tokens.csv --format bitwarden
+
+# Write every format
+python authy_migrate.py tokens.csv --format all
 ```
 
 ### Output formats
@@ -67,6 +75,7 @@ python authy_migrate.py tokens.csv -o ~/exports --format aegis
 | File | Compatible with |
 |---|---|
 | `tokens_aegis.json` | Aegis vault (db v3) - Aegis (Android) natively; Proton Authenticator, 2FAS and others that support Aegis import |
+| `tokens_bitwarden.json` | Unencrypted Bitwarden JSON - Bitwarden Password Manager ("Bitwarden (json)" import) and Bitwarden Authenticator (reads the TOTP seeds from a Password Manager JSON) |
 | `otpauth_uris.txt` | Plain-text URIs accepted by most open-source authenticators; some apps (e.g. Google Authenticator, iOS Passwords) only import URIs via QR code |
 
 > [!IMPORTANT]
@@ -87,8 +96,8 @@ understands. It runs in three moves:
 2. **Unlock each token.** For every row, your password plus that row's `salt` are stretched
    into a 32-byte key (PBKDF2), which then decrypts the `encrypted_seed` with AES. The result
    is the base32 TOTP secret - the short string that actually generates your 6-digit codes.
-3. **Write the output.** The recovered secrets are saved as an Aegis vault and/or a list of
-   `otpauth://` URIs, each written owner-only (`0600`).
+3. **Write the output.** The recovered secrets are saved as an Aegis vault, a Bitwarden JSON
+   export and/or a list of `otpauth://` URIs, each written owner-only (`0600`).
 
 A wrong backup password produces garbage that fails a final validity check, so every row
 fails together. The script notices that nothing decrypted and stops telling you the password was likely wrong.
