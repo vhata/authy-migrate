@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "authy-migrate"
 version = "0.1.0"
-description = "Decrypt an Authy GDPR data export and rewrite the tokens as an Aegis vault or otpauth:// URIs."
+description = "Decrypt an Authy GDPR data export and rewrite the tokens as an Aegis vault, a Bitwarden JSON export or otpauth:// URIs."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["cryptography"]
-keywords = ["authy", "aegis", "totp", "2fa", "otpauth", "gdpr"]
+keywords = ["authy", "aegis", "bitwarden", "totp", "2fa", "otpauth", "gdpr"]
 classifiers = [
     "Environment :: Console",
     "Operating System :: OS Independent",
