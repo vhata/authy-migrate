@@ -25,7 +25,8 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
 
-from Crypto.Cipher import AES
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 
 # Tried in order. The export carries no per-token iteration count, and older
@@ -48,16 +49,19 @@ def _try_decrypt(
         iterations,
         dklen=32,
     )
-    plain = AES.new(key, AES.MODE_CBC, iv).decrypt(ciphertext)
+    decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+    padded = decryptor.update(ciphertext) + decryptor.finalize()
 
-    pad = plain[-1]
-    if pad < 1 or pad > 16 or not all(b == pad for b in plain[-pad:]):
+    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+    try:
+        plain = unpadder.update(padded) + unpadder.finalize()
+    except ValueError:
         return None
 
     # A wrong key passes the padding check roughly 1 time in 256, so the
     # plaintext must also look like a base32 secret before it is accepted.
     try:
-        secret = plain[:-pad].decode("utf-8").strip().upper()
+        secret = plain.decode("utf-8").strip().upper()
     except UnicodeDecodeError:
         return None
     return secret if _BASE32_SECRET.fullmatch(secret) else None
