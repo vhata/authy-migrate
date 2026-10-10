@@ -96,6 +96,10 @@ understands. It runs in three moves:
 2. **Unlock each token.** For every row, your password plus that row's `salt` are stretched
    into a 32-byte key (PBKDF2), which then decrypts the `encrypted_seed` with AES. The result
    is the base32 TOTP secret - the short string that actually generates your 6-digit codes.
+   Twilio's post "How Authy 2FA backups work" says backups originally used 1,000 PBKDF2
+   rounds and that the count would be raised, and the export does not record which count
+   each token used, so the script tries 100,000 rounds first and falls back to 1,000. A
+   result is accepted only if it has valid padding and is a well-formed base32 secret.
 3. **Write the output.** The recovered secrets are saved as an Aegis vault, a Bitwarden JSON
    export and/or a list of `otpauth://` URIs, each written owner-only (`0600`).
 
@@ -105,7 +109,7 @@ fails together. The script notices that nothing decrypted and stops telling you 
 Under the hood, Authy encrypts each backup seed with the scheme below, which this tool reverses:
 
 ```
-Key  = PBKDF2-HMAC-SHA1(password, salt_utf8, iterations=100000, dklen=32)
+Key  = PBKDF2-HMAC-SHA1(password, salt_utf8, iterations=100000 or 1000, dklen=32)
 Data = AES-256-CBC(key, iv_hex, base64(encrypted_seed))
 ```
 
