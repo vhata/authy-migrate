@@ -8,11 +8,15 @@ from unittest.mock import patch
 import pytest
 from Crypto.Cipher import AES
 
+import authy_migrate
 from authy_migrate import (
+    KDF_ITERATION_CANDIDATES,
+    KDF_ITERATIONS,
     build_aegis,
     build_bitwarden,
     build_otpauth,
     decrypt_seed,
+    decrypt_seed_with_iterations,
     main,
     normalize_authy_csv,
     parse_row,
@@ -31,13 +35,21 @@ _SECRET = "JBSWY3DPEHPK3PXP"
 
 
 def _encrypt(
-    secret: str, password: str = _PASSWORD, salt: str = _SALT, iv_hex: str = _IV_HEX
+    secret: str,
+    password: str = _PASSWORD,
+    salt: str = _SALT,
+    iv_hex: str = _IV_HEX,
+    iterations: int = 100_000,
 ) -> str:
     """Encrypt a secret the same way Authy does, for use in test fixtures."""
     key = hashlib.pbkdf2_hmac(
-        "sha1", password.encode(), salt.encode(), 100_000, dklen=32
+        "sha1", password.encode(), salt.encode(), iterations, dklen=32
     )
-    plain = secret.encode("utf-8")
+    return _encrypt_plaintext(secret.encode("utf-8"), key, iv_hex)
+
+
+def _encrypt_plaintext(plain: bytes, key: bytes, iv_hex: str = _IV_HEX) -> str:
+    """PKCS#7-pad and AES-256-CBC encrypt arbitrary bytes under a given key."""
     pad_len = 16 - (len(plain) % 16)
     padded = plain + bytes([pad_len] * pad_len)
     ciphertext = AES.new(key, AES.MODE_CBC, bytes.fromhex(iv_hex)).encrypt(padded)
@@ -45,6 +57,7 @@ def _encrypt(
 
 
 _ENCRYPTED = _encrypt(_SECRET)
+_ENCRYPTED_LEGACY = _encrypt(_SECRET, iterations=1_000)
 
 
 def _make_csv(rows: list[dict], wrap: bool = False, wrap_lines: bool = False) -> str:
@@ -74,8 +87,10 @@ def _make_unquoted_csv(rows: list[dict], wrapping: str = "plain") -> str:
     return f'"{content}"' if wrapping == "whole_file" else content
 
 
-def _token_row(name: str = "GitHub:user@example.com") -> dict:
-    return {"name": name, "encrypted_seed": _ENCRYPTED, "salt": _SALT, "iv": _IV_HEX}
+def _token_row(
+    name: str = "GitHub:user@example.com", encrypted_seed: str = _ENCRYPTED
+) -> dict:
+    return {"name": name, "encrypted_seed": encrypted_seed, "salt": _SALT, "iv": _IV_HEX}
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +123,78 @@ class TestDecryptSeed:
         except (ValueError, UnicodeDecodeError):
             return
         assert result != _SECRET
+
+
+class TestKdfIterationFallback:
+    def test_candidates_start_with_default(self):
+        assert KDF_ITERATION_CANDIDATES == (100_000, 1_000)
+        assert KDF_ITERATIONS == KDF_ITERATION_CANDIDATES[0]
+
+    def test_legacy_1000_round_row_decrypts(self):
+        assert decrypt_seed_with_iterations(
+            _ENCRYPTED_LEGACY, _SALT, _IV_HEX, _PASSWORD
+        ) == (_SECRET, 1_000)
+        assert decrypt_seed(_ENCRYPTED_LEGACY, _SALT, _IV_HEX, _PASSWORD) == _SECRET
+
+    def test_default_100000_round_row_is_tried_first(self):
+        real_pbkdf2 = hashlib.pbkdf2_hmac
+        attempted = []
+
+        def recording_pbkdf2(hash_name, password, salt, iterations, dklen=None):
+            attempted.append(iterations)
+            return real_pbkdf2(hash_name, password, salt, iterations, dklen)
+
+        with patch.object(authy_migrate.hashlib, "pbkdf2_hmac", recording_pbkdf2):
+            result = decrypt_seed_with_iterations(_ENCRYPTED, _SALT, _IV_HEX, _PASSWORD)
+
+        assert result == (_SECRET, 100_000)
+        assert attempted == [100_000]
+
+    def test_wrong_password_fails_for_every_candidate(self):
+        real_pbkdf2 = hashlib.pbkdf2_hmac
+        attempted = []
+
+        def recording_pbkdf2(hash_name, password, salt, iterations, dklen=None):
+            attempted.append(iterations)
+            return real_pbkdf2(hash_name, password, salt, iterations, dklen)
+
+        for encrypted in (_ENCRYPTED, _ENCRYPTED_LEGACY):
+            attempted.clear()
+            with patch.object(authy_migrate.hashlib, "pbkdf2_hmac", recording_pbkdf2):
+                with pytest.raises(ValueError, match="wrong password"):
+                    decrypt_seed_with_iterations(encrypted, _SALT, _IV_HEX, "wrong")
+            assert attempted == list(KDF_ITERATION_CANDIDATES)
+
+    @pytest.mark.parametrize(
+        "plaintext",
+        [
+            b"not base32 at all!",
+            b"JBSWY3DP0189",  # digits 0, 1, 8 and 9 are outside the base32 alphabet
+            b"JBSW=Y3DP",  # padding only allowed at the end
+            b"   ",  # empty after strip
+            b"\xff\xfe\xfd",  # not UTF-8
+        ],
+    )
+    def test_padding_valid_but_non_base32_plaintext_is_rejected(self, plaintext):
+        for iterations in KDF_ITERATION_CANDIDATES:
+            key = hashlib.pbkdf2_hmac(
+                "sha1", _PASSWORD.encode(), _SALT.encode(), iterations, dklen=32
+            )
+            encrypted = _encrypt_plaintext(plaintext, key)
+            with pytest.raises(ValueError, match="wrong password") as exc:
+                decrypt_seed_with_iterations(encrypted, _SALT, _IV_HEX, _PASSWORD)
+            assert type(exc.value) is ValueError
+
+    def test_error_message_does_not_leak_inputs(self):
+        with pytest.raises(ValueError) as exc:
+            decrypt_seed(_ENCRYPTED, _SALT, _IV_HEX, "not-the-password")
+        message = str(exc.value)
+        for value in (_ENCRYPTED, _SALT, _IV_HEX, "not-the-password", _SECRET):
+            assert value not in message
+
+    def test_base32_padding_is_accepted(self):
+        enc = _encrypt("JBSWY3DPEE======")
+        assert decrypt_seed(enc, _SALT, _IV_HEX, _PASSWORD) == "JBSWY3DPEE======"
 
 
 # ---------------------------------------------------------------------------
@@ -633,3 +720,29 @@ class TestMain:
             "No tokens decrypted (1 failed to decrypt, 1 malformed row(s))"
             " — wrong backup password?"
         ) in err
+    def test_legacy_iteration_summary_shown_when_needed(self, tmp_path, capsys):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(
+            _make_csv(
+                [
+                    _token_row("New:user"),
+                    _token_row("Old:one", encrypted_seed=_ENCRYPTED_LEGACY),
+                    _token_row("Old:two", encrypted_seed=_ENCRYPTED_LEGACY),
+                ]
+            )
+        )
+        _run([str(csv_file)])
+        out = capsys.readouterr().out
+        assert "2 token(s) used the legacy 1,000-round key derivation" in out
+        for name in ("New:user", "Old:one", "Old:two"):
+            assert f"  ✓  {name}\n" in out
+
+        aegis = json.loads((tmp_path / "tokens_aegis.json").read_text())
+        assert [e["info"]["secret"] for e in aegis["db"]["entries"]] == [_SECRET] * 3
+
+    def test_legacy_iteration_summary_absent_by_default(self, tmp_path, capsys):
+        csv_file = tmp_path / "tokens.csv"
+        csv_file.write_text(_make_csv([_token_row()]))
+        _run([str(csv_file)])
+        out = capsys.readouterr().out
+        assert "key derivation" not in out
