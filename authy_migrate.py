@@ -5,6 +5,9 @@ Decrypt Authy GDPR export tokens and convert to standard authenticator formats.
 Encryption scheme:
   Key  = PBKDF2-HMAC-SHA1(password, salt_utf8, iterations=100000, dklen=32)
   Data = AES-256-CBC(key, iv_hex, base64(encrypted_seed))
+
+Authy backups originally used 1000 iterations, and the export does not record
+which count a token used, so each count in KDF_ITERATION_CANDIDATES is tried.
 """
 import argparse
 import base64
@@ -15,36 +18,67 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 import uuid
+from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
 
 from Crypto.Cipher import AES
 
 
-KDF_ITERATIONS = 100_000
+# Tried in order. The export carries no per-token iteration count, and older
+# Authy clients derived backup keys with 1000 rounds before the count was raised.
+KDF_ITERATION_CANDIDATES = (100_000, 1_000)
+KDF_ITERATIONS = KDF_ITERATION_CANDIDATES[0]
 REQUIRED_COLUMNS = {"name", "encrypted_seed", "salt", "iv"}
 
+_BASE32_SECRET = re.compile(r"[A-Z2-7]+=*")
 
-def decrypt_seed(encrypted_seed_b64: str, salt: str, iv_hex: str, password: str) -> str:
-    """Return base32-encoded TOTP secret (uppercase)."""
+
+def _try_decrypt(
+    ciphertext: bytes, iv: bytes, salt: str, password: str, iterations: int
+) -> str | None:
+    """Return the secret if this iteration count yields a plausible one, else None."""
     key = hashlib.pbkdf2_hmac(
         "sha1",
         password.encode("utf-8"),
         salt.encode("utf-8"),  # salt is raw UTF-8, not base64
-        KDF_ITERATIONS,
+        iterations,
         dklen=32,
     )
-    iv = bytes.fromhex(iv_hex)
-    ciphertext = base64.b64decode(encrypted_seed_b64)
     plain = AES.new(key, AES.MODE_CBC, iv).decrypt(ciphertext)
 
     pad = plain[-1]
     if pad < 1 or pad > 16 or not all(b == pad for b in plain[-pad:]):
-        raise ValueError("Invalid padding — wrong password?")
+        return None
 
-    return plain[:-pad].decode("utf-8").strip().upper()
+    # A wrong key passes the padding check roughly 1 time in 256, so the
+    # plaintext must also look like a base32 secret before it is accepted.
+    try:
+        secret = plain[:-pad].decode("utf-8").strip().upper()
+    except UnicodeDecodeError:
+        return None
+    return secret if _BASE32_SECRET.fullmatch(secret) else None
+
+
+def decrypt_seed_with_iterations(
+    encrypted_seed_b64: str, salt: str, iv_hex: str, password: str
+) -> tuple[str, int]:
+    """Return (base32 TOTP secret, PBKDF2 iteration count that decrypted it)."""
+    iv = bytes.fromhex(iv_hex)
+    ciphertext = base64.b64decode(encrypted_seed_b64)
+    for iterations in KDF_ITERATION_CANDIDATES:
+        secret = _try_decrypt(ciphertext, iv, salt, password, iterations)
+        if secret is not None:
+            return secret, iterations
+    raise ValueError("Invalid padding — wrong password?")
+
+
+def decrypt_seed(encrypted_seed_b64: str, salt: str, iv_hex: str, password: str) -> str:
+    """Return base32-encoded TOTP secret (uppercase)."""
+    return decrypt_seed_with_iterations(encrypted_seed_b64, salt, iv_hex, password)[0]
 
 
 def _unwrap_quotes(text: str) -> str:
@@ -271,6 +305,7 @@ def main():
     successes = []
     failures = []
     malformed = 0
+    legacy_iterations = Counter()
 
     for fields in reader:
         if not any(f.strip() for f in fields):
@@ -293,7 +328,9 @@ def main():
             continue
 
         try:
-            secret = decrypt_seed(enc_seed, salt, iv, password)
+            secret, iterations = decrypt_seed_with_iterations(enc_seed, salt, iv, password)
+            if iterations != KDF_ITERATIONS:
+                legacy_iterations[iterations] += 1
             issuer, account = split_name(name)
             successes.append(
                 {"name": name, "issuer": issuer, "account": account, "secret": secret}
@@ -342,6 +379,8 @@ def main():
         written.append(bitwarden_path)
 
     print(f"\nDecrypted {len(successes)} token(s)" + "".join(f", {p}" for p in problems))
+    for iterations, count in sorted(legacy_iterations.items(), reverse=True):
+        print(f"{count} token(s) used the legacy {iterations:,}-round key derivation")
     print("\nOutput:")
     for path in written:
         print(f"  {path}")
