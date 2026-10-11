@@ -24,8 +24,20 @@ Authy provides no direct export, so you must submit a data portability request t
 
 ### 2. Install
 
-Install the `authy-migrate` command with [pipx](https://pipx.pypa.io/), which keeps it in
-its own isolated environment:
+Install the `authy-migrate` command with [uv](https://docs.astral.sh/uv/), which keeps it
+in its own isolated environment:
+
+```bash
+uv tool install git+https://github.com/uiltondutra/authy-migrate
+```
+
+Or run it once without installing anything permanently:
+
+```bash
+uvx --from git+https://github.com/uiltondutra/authy-migrate authy-migrate <tokens.csv>
+```
+
+[pipx](https://pipx.pypa.io/) works the same way if you prefer it:
 
 ```bash
 pipx install git+https://github.com/uiltondutra/authy-migrate
@@ -50,10 +62,11 @@ pip install -r requirements.txt
 authy-migrate [options] <tokens.csv>
 ```
 
-Or, without installing:
+Or, from a clone without installing (uv creates the environment on first run):
 
 ```bash
-python authy_migrate.py [options] <tokens.csv>
+uv run authy-migrate [options] <tokens.csv>
+python authy_migrate.py [options] <tokens.csv>   # after pip install -r requirements.txt
 ```
 
 You will be prompted for your Authy backup password, and the output files are written next
@@ -137,6 +150,19 @@ Under the hood, Authy encrypts each backup seed with the scheme below, which thi
 Key  = PBKDF2-HMAC-SHA1(password, salt_utf8, iterations=100000 or 1000, dklen=32)
 Data = AES-256-CBC(key, iv_hex, base64(encrypted_seed))
 ```
+
+## Development
+
+The project is managed with [uv](https://docs.astral.sh/uv/). From a clone:
+
+```bash
+uv sync                # create .venv with the package and dev tools
+uv run pytest          # run the tests
+uv run ruff check .    # lint
+```
+
+After changing dependencies in `pyproject.toml`, run `uv lock` and commit the updated
+`uv.lock`.
 
 ## Alternatives
 
