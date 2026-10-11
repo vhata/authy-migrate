@@ -1,6 +1,7 @@
 # Authy export and decrypted output — never commit these
 *.csv
 tokens_aegis.json
+tokens_bitwarden.json
 otpauth_uris.txt
 
 # Python & Build outputs
